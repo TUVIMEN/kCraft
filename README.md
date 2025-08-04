@@ -7,7 +7,7 @@
  - [jq](https://github.com/stedolan/jq)
  - [aria2](https://github.com/aria2/aria2)
  - [rofi](https://github.com/davatorium/rofi)
- -
+
 # Installation
 
     install -m 755 kcraft /usr/bin
