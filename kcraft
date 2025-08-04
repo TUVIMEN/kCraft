@@ -30,9 +30,9 @@ auth_uuid='00000000-0000-0000-0000-000000000000'
 auth_access_token='null'
 user_type='legacy'
 
-assets_root="${game_directory}/assets"
-libraries_root="${game_directory}/libraries"
-versions_root="${game_directory}/versions"
+java_args=""
+game_version=""
+force='0'
 
 IFS=$'\n'
 
@@ -41,52 +41,55 @@ perr() {
     exit 1
 }
 
-get_manifest() {
-    local manifest="${game_directory}/version_manifest.json"
-    [ -s "$manifest" ] || curl --create-dirs -#o "$manifest" 'https://launchermeta.mojang.com/mc/game/version_manifest.json'
+unknown_version() {
+    perr "version \"$1\" does not exist"
 }
 
-choose_version_r() {
-    get_manifest
-    local manifest="${game_directory}/version_manifest.json"
-    jq -r -j '.versions[] | "<b>", .id, "</b> ", .type, "\n"' "$manifest" \
-            | rofi -dmenu -p 'version' -markup-rows -format 'i' \
-        | xargs -I% \
-            jq -Mr '.versions[%] | .id, .url' "$manifest"
+get_manifest() {
+    curl --create-dirs -#o "$manifest_path" 'https://launchermeta.mojang.com/mc/game/version_manifest.json'
+}
+
+get_metadata_url() {
+    jq -Mr '.versions[] | select(.id=="'"$1"'") | .url' "$manifest_path"
 }
 
 choose_version() {
-    local t="$(choose_version_r)"
-    local version_name="$(head -n1 <<< "$t")"
-    local path="${versions_root}/$version_name/$version_name.json"
+    get_manifest
 
-    [ -s "$path" ] || curl --create-dirs -C- -#o "$path" "$(tail -n1 <<< "$t")"
+    jq -r -j '.versions[] | "<b>", .id, "</b> ", .type, "\n"' "$manifest_path" \
+        | rofi -dmenu -p 'version' -markup-rows \
+        | sed 's#</b>.*##;s#^<b>##'
+}
 
-    echo "$version_name"
+get_metadata() {
+    local path="$versions_root/$1/$1.json" url
+    [ -s "$path" ] || {
+        url="$(get_metadata_url "$1")"
+        [ -z "$url" ] && unknown_version "$1"
+        curl --create-dirs -C- -#o "$path" "$url"
+    }
 }
 
 get_version_path() {
-    local version_path="${versions_root}/$1/$1.json"
-    [ -s "$version_path" ] || perr 'Such version does not exist'
+    local version_path="$versions_root/$1/$1.json"
+    [ -s "$version_path" ] || unknown_version "$1"
     echo "$version_path"
 }
 
 get_client() {
-    local version_name="$1"
-    local version_path="$(get_version_path "$version_name")"
+    local version_path="$(get_version_path "$1")"
     local client_path="${version_path%json}jar"
     [ -s "$client_path" ] || curl -C- -#o "$client_path" "$(jq -r '.downloads.client.url' "$version_path")"
 }
 
 get_assets() {
-    local version_name="$1"
-    local version_path="$(get_version_path "$version_name")"
+    local version_path="$(get_version_path "$1")"
     local assets_index_name="$(jq -r '.assetIndex.id' "$version_path")"
-    local assets_path="${assets_root}/indexes/${assets_index_name}.json"
+    local assets_path="$assets_root/indexes/$assets_index_name.json"
 
     [ -s "$assets_path" ] || curl --create-dirs -C- -#o "$assets_path" "$(jq -r '.assetIndex.url' "$version_path")"
 
-    local objects_path="${assets_root}/objects"
+    local objects_path="$assets_root/objects"
 
     for i in $(jq -r '.objects[].hash' "$assets_path")
     do
@@ -96,31 +99,32 @@ get_assets() {
 }
 
 get_libs() {
-    local version_name="$1"
-    local version_path="$(get_version_path "$version_name")"
+    local version_path="$(get_version_path "$1")"
     for i in $(jq -r '.libraries[].downloads[] | if has("natives-linux") then ."natives-linux" else if has("url") then . else empty end end | "\(.path)\t\(.url)"' "$version_path")
     do
         [ -s "$(cut -f2 <<< "$i")" ] && continue
         printf '%s\n\tout=%s\n' "$(cut -f2 <<< "$i")" "$(cut -f1 <<< "$i")"
-    done | aria2c -i- -x16 -c -d "${libraries_root}"
+    done | aria2c -i- -x16 -c -d "$libraries_root"
 }
 
 extract_natives() {
     local version_name="$1"
     local version_path="$(get_version_path "$version_name")"
     jq -r '.libraries[].downloads.classifiers."natives-linux".path // empty' "$version_path" \
-        | xargs -I% unzip -n "${libraries_root}/%" -d "${versions_root}/${version_name}/natives"
+        | xargs -I% unzip -n "$libraries_root/%" -d "$versions_root/$version_name/natives"
 }
 
 start_client() {
+    cd "$game_directory"
+
     local version_name="$1"
     local version_path="$(get_version_path "$version_name")"
     local version_type="$(jq -r '.type' "$version_path")"
     local assets_index_name="$(jq -r '.assetIndex.id' "$version_path")"
-    local natives_directory="${versions_root}/${version_name}/natives"
-    local classpath="$(jq -r '.libraries[].downloads[].path // empty' "$version_path" | xargs -I% printf "${libraries_root}/%:"; echo "${versions_root}/${version_name}/${version_name}.jar")"
+    local natives_directory="$versions_root/$version_name/natives"
+    local classpath="$(jq -r '.libraries[].downloads[].path // empty' "$version_path" | xargs -I% printf "$libraries_root/%:"; echo "$versions_root/$version_name/$version_name.jar")"
     local main_class="$(jq -r '.mainClass' "$version_path")"
-    cd "$game_directory"
+
     java \
         -Xmx4G -Xss1M \
         -Dfile.encoding=UTF-8 \
@@ -136,17 +140,68 @@ start_client() {
         --uuid $auth_uuid \
         --accessToken $auth_access_token \
         --userType $user_type \
-        --versionType $version_type
+        --versionType $version_type \
+        $java_args
 }
 
-version="$(choose_version)"
-[ -z "$version" ] && exit
+run() {
+    local metadata_url
+    if [ -z "$game_version" ]
+    then
+        game_version="$(choose_version)"
+        [ -z "$game_version" ] && exit
+    fi
 
-if [ \! -s "${versions_root}/${version}/${version}.jar" ]
-then
-    get_client "$version"
-    get_assets "$version"
-    get_libs "$version"
-    extract_natives "$version"
-fi
-start_client "$version"
+    get_metadata "$game_version"
+
+    if [ "$force" -eq 1 -o \! -s "$versions_root/$game_version/$game_version.jar" ]
+    then
+        get_client "$game_version"
+        get_assets "$game_version"
+        get_libs "$game_version"
+        extract_natives "$game_version"
+    fi
+    start_client "$game_version"
+}
+
+usage() {
+    local arg0="$(basename "$0")"
+    printf '%s [OPTION...] [VERSION]\n' "$arg0"
+    printf "Bash Minecraft launcher\n\n"
+    printf "Options:\n"
+    printf "  -d,\t--directory DIR\t\tset game directory\n"
+    printf "  -u,\t--user USERNAME\t\tset user name\n"
+    printf "  -j,\t--java-args ARGS\tadd additional arguments to java\n"
+    printf "  -f,\t--force\t\t\tforce redownload of game version\n"
+    printf "  -h\t\t\t\tshow help\n"
+}
+
+while [ "$#" -gt '0' ]
+do
+    case "$1" in
+        -d|--directory)
+            game_directory="$2"
+            shift;;
+        -u|--user)
+            auth_player_name="$2"
+            shift;;
+        -j|--java-args)
+            java_args="$2"
+            shift;;
+        -f|--force)
+            force="1";;
+        -h|--help)
+            usage
+            exit;;
+        *)
+            game_version=$1;;
+    esac
+    shift
+done
+
+assets_root="$game_directory/assets"
+libraries_root="$game_directory/libraries"
+versions_root="$game_directory/versions"
+manifest_path="$game_directory/version_manifest.json"
+
+run
