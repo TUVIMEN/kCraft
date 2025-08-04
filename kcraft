@@ -1,0 +1,152 @@
+#!/bin/bash
+# Copyright (c) 2020 Stnby <stnby@kernal.eu>
+# Copyright (C) 2025 Dominik Stanisław Suchora <hexderm@gmail.com>
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+auth_player_name="$USER"
+game_directory=~/.minecraft
+
+launcher_name='java-minecraft-launcher'
+launcher_version='1.6.84-j'
+
+auth_uuid='00000000-0000-0000-0000-000000000000'
+auth_access_token='null'
+user_type='legacy'
+
+assets_root="${game_directory}/assets"
+libraries_root="${game_directory}/libraries"
+versions_root="${game_directory}/versions"
+
+IFS=$'\n'
+
+perr() {
+    echo "$@" >&2
+    exit 1
+}
+
+get_manifest() {
+    local manifest="${game_directory}/version_manifest.json"
+    [ -s "$manifest" ] || curl --create-dirs -#o "$manifest" 'https://launchermeta.mojang.com/mc/game/version_manifest.json'
+}
+
+choose_version_r() {
+    get_manifest
+    local manifest="${game_directory}/version_manifest.json"
+    jq -r -j '.versions[] | "<b>", .id, "</b> ", .type, "\n"' "$manifest" \
+            | rofi -dmenu -p 'version' -markup-rows -format 'i' \
+        | xargs -I% \
+            jq -Mr '.versions[%] | .id, .url' "$manifest"
+}
+
+choose_version() {
+    local t="$(choose_version_r)"
+    local version_name="$(head -n1 <<< "$t")"
+    local path="${versions_root}/$version_name/$version_name.json"
+
+    [ -s "$path" ] || curl --create-dirs -C- -#o "$path" "$(tail -n1 <<< "$t")"
+
+    echo "$version_name"
+}
+
+get_version_path() {
+    local version_path="${versions_root}/$1/$1.json"
+    [ -s "$version_path" ] || perr 'Such version does not exist'
+    echo "$version_path"
+}
+
+get_client() {
+    local version_name="$1"
+    local version_path="$(get_version_path "$version_name")"
+    local client_path="${version_path%json}jar"
+    [ -s "$client_path" ] || curl -C- -#o "$client_path" "$(jq -r '.downloads.client.url' "$version_path")"
+}
+
+get_assets() {
+    local version_name="$1"
+    local version_path="$(get_version_path "$version_name")"
+    local assets_index_name="$(jq -r '.assetIndex.id' "$version_path")"
+    local assets_path="${assets_root}/indexes/${assets_index_name}.json"
+
+    [ -s "$assets_path" ] || curl --create-dirs -C- -#o "$assets_path" "$(jq -r '.assetIndex.url' "$version_path")"
+
+    local objects_path="${assets_root}/objects"
+
+    for i in $(jq -r '.objects[].hash' "$assets_path")
+    do
+        [ -s "$objects_path/${i::2}/$i" ] && continue
+        printf 'https://resources.download.minecraft.net/%.2s/%s\n\tout=%.2s/%s\n' "$i" "$i" "$i" "$i"
+    done | aria2c -i- -x16 -c -d "$objects_path"
+}
+
+get_libs() {
+    local version_name="$1"
+    local version_path="$(get_version_path "$version_name")"
+    for i in $(jq -r '.libraries[].downloads[] | if has("natives-linux") then ."natives-linux" else if has("url") then . else empty end end | "\(.path)\t\(.url)"' "$version_path")
+    do
+        [ -s "$(cut -f2 <<< "$i")" ] && continue
+        printf '%s\n\tout=%s\n' "$(cut -f2 <<< "$i")" "$(cut -f1 <<< "$i")"
+    done | aria2c -i- -x16 -c -d "${libraries_root}"
+}
+
+extract_natives() {
+    local version_name="$1"
+    local version_path="$(get_version_path "$version_name")"
+    jq -r '.libraries[].downloads.classifiers."natives-linux".path // empty' "$version_path" \
+        | xargs -I% unzip -n "${libraries_root}/%" -d "${versions_root}/${version_name}/natives"
+}
+
+start_client() {
+    local version_name="$1"
+    local version_path="$(get_version_path "$version_name")"
+    local version_type="$(jq -r '.type' "$version_path")"
+    local assets_index_name="$(jq -r '.assetIndex.id' "$version_path")"
+    local natives_directory="${versions_root}/${version_name}/natives"
+    local classpath="$(jq -r '.libraries[].downloads[].path // empty' "$version_path" | xargs -I% printf "${libraries_root}/%:"; echo "${versions_root}/${version_name}/${version_name}.jar")"
+    local main_class="$(jq -r '.mainClass' "$version_path")"
+    cd "$game_directory"
+    java \
+        -Xmx4G -Xss1M \
+        -Dfile.encoding=UTF-8 \
+        -Djava.library.path=$natives_directory \
+        -Dminecraft.launcher.brand=$launcher_name \
+        -Dminecraft.launcher.version=$launcher_version \
+        -cp $classpath $main_class \
+        --username $auth_player_name \
+        --version $version_name \
+        --gameDir $game_directory \
+        --assetsDir $assets_root \
+        --assetIndex $assets_index_name \
+        --uuid $auth_uuid \
+        --accessToken $auth_access_token \
+        --userType $user_type \
+        --versionType $version_type
+}
+
+version="$(choose_version)"
+[ -z "$version" ] && exit
+
+if [ \! -s "${versions_root}/${version}/${version}.jar" ]
+then
+    get_client "$version"
+    get_assets "$version"
+    get_libs "$version"
+    extract_natives "$version"
+fi
+start_client "$version"
