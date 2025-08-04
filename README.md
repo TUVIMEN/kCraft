@@ -1,6 +1,9 @@
 # kCraft - Minecraft Launcher
 
-Kernal Minecraft Launcher\
-Written in POSIX Shell
+Kernal Minecraft Launcher written in bash
 
-[Read more](https://kernal.eu/posts/kcraft-minecraft-launcher/)
+# Requirements
+
+ - [jq](https://github.com/stedolan/jq)
+ - [aria2](https://github.com/aria2/aria2)
+ - [rofi](https://github.com/davatorium/rofi)
