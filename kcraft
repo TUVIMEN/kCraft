@@ -21,14 +21,18 @@
 # SOFTWARE.
 
 auth_player_name="$USER"
+user_properties=""
 game_directory=~/.minecraft
 
 launcher_name='java-minecraft-launcher'
 launcher_version='1.6.84-j'
 
 auth_uuid='00000000-0000-0000-0000-000000000000'
+auth_session=""
+auth_xuid='0000000000000000'
 auth_access_token='null'
 user_type='legacy'
+clientid=0
 
 java_args=""
 game_version=""
@@ -114,6 +118,91 @@ extract_natives() {
         | xargs -I% unzip -n "$libraries_root/%" -d "$versions_root/$version_name/natives"
 }
 
+make_minecraft_args_add() {
+    local delim=' ' first
+
+    [ "$(tr "$delim" '\n' <<< "$1" | wc -l)" -ne 2 ] && delim='=' # handles -Dflag=value
+
+    if [ "$(tr "$delim" '\n' <<< "$1" | wc -l)" -ne 2 ]
+    then
+        delim=""
+        first="$(sed 's/[0-9].*//' <<< "$1")" # handles -Xmx4G -Xss1M
+    else
+        first="$(cut -d "$delim" -f1 <<< "$1")"
+    fi
+
+    if grep -qE '(^|\s)'"$first$delim" <<< "$2"
+    then
+        echo -n "$2"
+    else
+        echo -n "$1 $2"
+    fi
+}
+
+make_minecraft_args() {
+    local t="$(jq -r '.minecraftArguments // (.arguments | to_entries | map(.value) | reverse | flatten | map(if . | type == "string" then . else empty end) | join(" ")) // empty' "$1") $java_args" i
+
+    for i in \
+        '-Xmx4G' \
+        '-Xss1M' \
+        '-Dfile.encoding=UTF-8' \
+        '-Djava.library.path=${natives_directory}' \
+        '-Dminecraft.launcher.brand=${launcher_name}' \
+        '-Dminecraft.launcher.version=${launcher_version}' \
+        '-cp ${classpath}' \
+        '--version ${version_name}' \
+        '--gameDir ${game_directory}' \
+        '--assetsDir ${assets_root}' \
+        '--assetIndex ${assets_index_name}' \
+        '--uuid ${auth_uuid}' \
+        '--accessToken ${auth_access_token}' \
+        '--username ${auth_player_name}' \
+        '--userType ${user_type}' \
+        '--versionType ${version_type}'
+    do
+        t="$(make_minecraft_args_add "$i" "$t")"
+    done
+    echo "$t"
+}
+
+minecraft_keep_arg_order() {
+    tr ' ' '\n' |  awk '
+    {
+        a[al++]=$0
+    }
+    END {
+        for (i in a) {
+            if (a[i] ~ /^-[XD]/) {
+                print a[i]
+                used[usedl++] = i
+            }
+        }
+        for (i in a) {
+            if (a[i] == "-cp") {
+                print a[i], a[i+1]
+                used[usedl++] = i
+                used[usedl++] = i+1
+                break
+            }
+        }
+        print "${main_class}"
+
+        for (i in a) {
+            found = 0
+            for (j in used) {
+                if (used[j] == i) {
+                    found = 1
+                    break
+                }
+            }
+            if (found)
+                continue
+
+            print a[i]
+        }
+    }' | tr '\n' ' '
+}
+
 start_client() {
     cd "$game_directory"
 
@@ -125,23 +214,10 @@ start_client() {
     local classpath="$(jq -r '.libraries[].downloads[].path // empty' "$version_path" | xargs -I% printf "$libraries_root/%:"; echo "$versions_root/$version_name/$version_name.jar")"
     local main_class="$(jq -r '.mainClass' "$version_path")"
 
-    java \
-        -Xmx4G -Xss1M \
-        -Dfile.encoding=UTF-8 \
-        -Djava.library.path=$natives_directory \
-        -Dminecraft.launcher.brand=$launcher_name \
-        -Dminecraft.launcher.version=$launcher_version \
-        -cp $classpath $main_class \
-        --username $auth_player_name \
-        --version $version_name \
-        --gameDir $game_directory \
-        --assetsDir $assets_root \
-        --assetIndex $assets_index_name \
-        --uuid $auth_uuid \
-        --accessToken $auth_access_token \
-        --userType $user_type \
-        --versionType $version_type \
-        $java_args
+    local t="$(make_minecraft_args "$version_path" \
+        | minecraft_keep_arg_order)"
+    echo "$t" >&2
+    eval "java $t"
 }
 
 run() {
@@ -200,6 +276,7 @@ do
 done
 
 assets_root="$game_directory/assets"
+game_assets="$assets_root"
 libraries_root="$game_directory/libraries"
 versions_root="$game_directory/versions"
 manifest_path="$game_directory/version_manifest.json"
