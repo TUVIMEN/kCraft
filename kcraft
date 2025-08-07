@@ -162,7 +162,7 @@ make_minecraft_args() {
     do
         t="$(make_minecraft_args_add "$i" "$t")"
     done
-    echo "$t"
+    minecraft_keep_arg_order <<< "$t"
 }
 
 minecraft_keep_arg_order() {
@@ -214,10 +214,7 @@ start_client() {
     local classpath="$(jq -r '.libraries[].downloads[].path // empty' "$version_path" | xargs -I% printf "$libraries_root/%:"; echo "$versions_root/$version_name/$version_name.jar")"
     local main_class="$(jq -r '.mainClass' "$version_path")"
 
-    local t="$(make_minecraft_args "$version_path" \
-        | minecraft_keep_arg_order)"
-    echo "$t" >&2
-    eval "java $t"
+    eval "java $(make_minecraft_args "$version_path")"
 }
 
 run() {
