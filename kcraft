@@ -38,6 +38,8 @@ java_args=""
 game_version=""
 force='0'
 
+in_terminal=0
+
 IFS=$'\n'
 
 perr() {
@@ -57,12 +59,27 @@ get_metadata_url() {
     jq -Mr '.versions[] | select(.id=="'"$1"'") | .url' "$manifest_path"
 }
 
+get_selector() {
+    [ "$in_terminal" -eq 1 ] \
+        && command -v fzf >/dev/null \
+        && echo 'fzf -i --prompt="version> "' \
+        && return
+
+    command -v dmenu >/dev/null \
+        && echo 'dmenu -l 15 -i -p version' \
+        && return
+
+    command -v rofi >/dev/null \
+        && echo 'rofi -dmenu -p version -case-insensitive' \
+        && return
+}
+
 choose_version() {
     get_manifest
 
-    jq -r -j '.versions[] | "<b>", .id, "</b> ", .type, "\n"' "$manifest_path" \
-        | rofi -dmenu -p 'version' -markup-rows \
-        | sed 's#</b>.*##;s#^<b>##'
+    jq -r -j '.versions[] | "\(.id) (\(.type))\n"' "$manifest_path" \
+        | eval "$(get_selector)" \
+        | sed 's# .*##'
 }
 
 get_metadata() {
@@ -221,6 +238,7 @@ run() {
     local metadata_url
     if [ -z "$game_version" ]
     then
+        [ -t 0 ] && in_terminal=1
         game_version="$(choose_version)"
         [ -z "$game_version" ] && exit
     fi

@@ -6,7 +6,7 @@
 
  - [jq](https://github.com/stedolan/jq)
  - [aria2](https://github.com/aria2/aria2)
- - [rofi](https://github.com/davatorium/rofi)
+ - [fzf](https://github.com/junegunn/fzf) or [dmenu](https://tools.suckless.org/dmenu/) or [rofi](https://github.com/davatorium/rofi) (fzf preferred when used in terminal)
 
 # Installation
 
