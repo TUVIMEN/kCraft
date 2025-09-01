@@ -264,7 +264,7 @@ usage() {
     printf "  -u,\t--user USERNAME\t\tset user name\n"
     printf "  -j,\t--java-args ARGS\tadd additional arguments to java\n"
     printf "  -f,\t--force\t\t\tforce redownload of game version\n"
-    printf "  -h\t\t\t\tshow help\n"
+    printf "  -h\t--help\t\t\tshow help\n"
 }
 
 while [ "$#" -gt '0' ]
